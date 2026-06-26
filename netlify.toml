@@ -6,7 +6,13 @@
 [functions]
   node_bundler = "esbuild"
   external_node_modules = ["@prisma/client", "serverless-http", "express", "cors"]
-  included_files = ["backend/prisma/**", "node_modules/.prisma/**", "backend/node_modules/.prisma/**"]
+  included_files = [
+    "backend/prisma/**",
+    "node_modules/.prisma/**",
+    "node_modules/@prisma/client/**",
+    "backend/node_modules/.prisma/**",
+    "backend/node_modules/@prisma/client/**"
+  ]
 
 [[redirects]]
   from = "/api/*"
