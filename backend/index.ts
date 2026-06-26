@@ -131,24 +131,113 @@ const inventoryItemMatches = (item: any, rawSearch: string) => {
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
-app.use((req: any, res: any, next: any) => {
-  if ((!req.body || Object.keys(req.body).length === 0) && req.apiGateway?.event?.body) {
+app.use(express.text({ type: 'text/plain', limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Robust serverless body parsing fallback
+app.use((req: any, _res: any, next: any) => {
+  // If body is already parsed, skip
+  if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
+    return next();
+  }
+
+  // Try to get body from various serverless sources
+  let rawBody: string | null = null;
+
+  // Source 1: serverless-http sets apiGateway
+  if (req.apiGateway?.event?.body) {
+    const isBase64 = req.apiGateway.event.isBase64Encoded;
+    rawBody = isBase64
+      ? Buffer.from(req.apiGateway.event.body, 'base64').toString('utf8')
+      : req.apiGateway.event.body;
+  }
+
+  // Source 2: body might be a string (text/plain parsed)
+  if (!rawBody && typeof req.body === 'string' && req.body.length > 0) {
+    rawBody = req.body;
+  }
+
+  // Source 3: Netlify Functions v2 might have rawBody
+  if (!rawBody && (req as any).rawBody) {
+    rawBody = String((req as any).rawBody);
+  }
+
+  if (rawBody) {
     try {
-      const rawBody = req.apiGateway.event.body;
-      const isBase64 = req.apiGateway.event.isBase64Encoded;
-      const decoded = isBase64 ? Buffer.from(rawBody, 'base64').toString('utf8') : rawBody;
-      req.body = JSON.parse(decoded);
+      req.body = JSON.parse(rawBody);
     } catch (err) {
-      console.error('Fallback body parser error:', err);
+      console.error('Serverless body parse error:', err);
     }
   }
   next();
 });
+
 app.use(committeeRoutes);
 app.use('/api/pos', posRoutes);
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Yarn POS Backend is running' });
+});
+
+// Debug endpoint to diagnose serverless environment issues
+app.all('/api/debug-status', async (req: any, res) => {
+  const info: any = { ts: new Date().toISOString() };
+
+  // Body info
+  info.body = {
+    type: typeof req.body,
+    keys: req.body ? Object.keys(req.body) : [],
+    value: req.body,
+    hasApiGateway: !!(req as any).apiGateway,
+    apiGatewayBodyPresent: !!(req as any).apiGateway?.event?.body,
+    method: req.method,
+    contentType: req.headers['content-type'],
+  };
+
+  // Environment
+  info.env = {
+    DATABASE_URL: process.env.DATABASE_URL ? 'SET (' + process.env.DATABASE_URL.substring(0, 25) + '...)' : 'NOT SET',
+    isPostgres,
+    NODE_ENV: process.env.NODE_ENV || 'not set',
+  };
+
+  // Database
+  try {
+    const userCount = await prisma.user.count();
+    const admin = await prisma.user.findFirst({ where: { role: 'ADMIN' }, orderBy: { id: 'asc' } });
+    info.db = {
+      connected: true,
+      userCount,
+      adminExists: !!admin,
+      adminUsername: admin?.username,
+      adminPasswordLength: admin?.password?.length,
+    };
+  } catch (e: any) {
+    info.db = { connected: false, error: e.message };
+  }
+
+  // Extra tables
+  try {
+    await ensureExtraTables();
+    info.extraTables = { ok: true };
+  } catch (e: any) {
+    info.extraTables = { ok: false, error: e.message };
+  }
+
+  // StaffProfile check
+  try {
+    const profiles: any[] = await prisma.$queryRawUnsafe(`SELECT * FROM "StaffProfile" LIMIT 5`);
+    info.staffProfiles = { count: profiles.length, sample: profiles.map((p: any) => ({ id: p.id, userId: p.userId || p.userid, name: p.name, role: p.role, pin: p.pin })) };
+  } catch (e: any) {
+    try {
+      const profiles: any[] = await prisma.$queryRawUnsafe(`SELECT * FROM StaffProfile LIMIT 5`);
+      info.staffProfiles = { count: profiles.length, sample: profiles.map((p: any) => ({ id: p.id, userId: p.userId || p.userid, name: p.name, role: p.role, pin: p.pin })) };
+    } catch (e2: any) {
+      info.staffProfiles = { error: e2.message };
+    }
+  }
+
+  res.json(info);
 });
 
 // -- Advanced Inventory APIs --
@@ -2086,20 +2175,56 @@ app.get('/api/auth/status', async (_req, res) => {
   }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', async (req: any, res) => {
   try {
     await ensureExtraTables();
-    const { username, password, pin } = req.body || {};
-    if (!q(username) || !q(password)) return res.status(401).json({ error: 'Invalid username/password' });
+
+    // Inline body extraction fallback for serverless
+    let body = req.body;
+    if (!body || typeof body !== 'object' || Object.keys(body).length === 0) {
+      // Try apiGateway event
+      if (req.apiGateway?.event?.body) {
+        try {
+          const raw = req.apiGateway.event.isBase64Encoded
+            ? Buffer.from(req.apiGateway.event.body, 'base64').toString('utf8')
+            : req.apiGateway.event.body;
+          body = JSON.parse(raw);
+        } catch {}
+      }
+      // Try string body
+      if ((!body || typeof body !== 'object') && typeof req.body === 'string') {
+        try { body = JSON.parse(req.body); } catch {}
+      }
+    }
+
+    const { username, password, pin } = body || {};
+    if (!q(username) || !q(password)) {
+      return res.status(401).json({ error: 'Invalid username/password', detail: 'empty_credentials', bodyType: typeof req.body, bodyKeys: req.body ? Object.keys(req.body) : [] });
+    }
+
+    // Try exact match first
     let user = await prisma.user.findFirst({
       where: { username: q(username), password: q(password) }
     });
+
+    // Fallback: accept both admin and 1122 as admin password
     if (!user && q(username) === 'admin' && (q(password) === 'admin' || q(password) === '1122')) {
       user = await prisma.user.findFirst({
         where: { username: 'admin', role: 'ADMIN' }
       });
     }
-    if (!user) return res.status(401).json({ error: 'Invalid username/password' });
+
+    if (!user) {
+      // Debug: check what users exist
+      const userCount = await prisma.user.count();
+      const adminUser = await prisma.user.findFirst({ where: { role: 'ADMIN' } });
+      return res.status(401).json({
+        error: 'Invalid username/password',
+        detail: 'user_not_found',
+        debug: { userCount, adminExists: !!adminUser, adminUsername: adminUser?.username, triedUsername: q(username) }
+      });
+    }
+
     const profileRows: any[] = await prisma.$queryRawUnsafe(`SELECT * FROM StaffProfile WHERE userId = ? LIMIT 1`, user.id);
     const profile = profileRows[0] || null;
     if (profile?.status && profile.status !== 'ACTIVE') return res.status(403).json({ error: 'User is inactive' });
@@ -2117,9 +2242,9 @@ app.post('/api/auth/login', async (req, res) => {
         permissions: user.role === 'ADMIN' ? ['ALL'] : permissions
       }
     });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Login failed' });
+  } catch (error: any) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Login failed', detail: error.message });
   }
 });
 
