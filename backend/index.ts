@@ -1993,12 +1993,19 @@ const ensureExtraTables = async () => {
     notes TEXT,
     FOREIGN KEY(staffId) REFERENCES StaffProfile(id) ON DELETE CASCADE
   )`);
-  const userCount = await prisma.user.count();
-  if (userCount === 0) {
-    const admin = await prisma.user.create({ data: { username: 'admin', password: 'admin', role: 'ADMIN' } });
+  const admin = await prisma.user.findFirst({ where: { role: 'ADMIN' }, orderBy: { id: 'asc' } });
+  if (!admin) {
+    const newAdmin = await prisma.user.create({ data: { username: 'admin', password: 'admin', role: 'ADMIN' } });
     await prisma.$executeRawUnsafe(`INSERT INTO StaffProfile (userId, name, phone, cnic, salary, role, pin, permissions, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      admin.id, 'Administrator', '', '', 0, 'ADMIN', '1234', JSON.stringify(['ALL']), 'ACTIVE'
+      newAdmin.id, 'Administrator', '', '', 0, 'ADMIN', '1234', JSON.stringify(['ALL']), 'ACTIVE'
     );
+  } else {
+    const profileRows: any[] = await prisma.$queryRawUnsafe(`SELECT * FROM StaffProfile WHERE userId = ? LIMIT 1`, admin.id);
+    if (!profileRows[0]) {
+      await prisma.$executeRawUnsafe(`INSERT INTO StaffProfile (userId, name, phone, cnic, salary, role, pin, permissions, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        admin.id, 'Administrator', '', '', 0, 'ADMIN', '1234', JSON.stringify(['ALL']), 'ACTIVE'
+      );
+    }
   }
 };
 ensureExtraTables().catch(err => console.error('Extra table setup failed:', err));
