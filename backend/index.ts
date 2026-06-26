@@ -2006,9 +2006,6 @@ const ensureExtraTables = async () => {
         admin.id, 'Administrator', '', '', 0, 'ADMIN', '1234', JSON.stringify(['ALL']), 'ACTIVE'
       );
     }
-    if (admin.password !== '1122') {
-      await prisma.user.update({ where: { id: admin.id }, data: { password: '1122' } });
-    }
   }
 };
 ensureExtraTables().catch(err => console.error('Extra table setup failed:', err));
@@ -2029,8 +2026,9 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     await ensureExtraTables();
     const { username, password, pin } = req.body || {};
+    if (!q(username) || !q(password)) return res.status(401).json({ error: 'Invalid username/password' });
     const user = await prisma.user.findFirst({
-      where: { username: q(username), ...(password ? { password: q(password) } : {}) }
+      where: { username: q(username), password: q(password) }
     });
     if (!user) return res.status(401).json({ error: 'Invalid username/password' });
     const profileRows: any[] = await prisma.$queryRawUnsafe(`SELECT * FROM StaffProfile WHERE userId = ? LIMIT 1`, user.id);
