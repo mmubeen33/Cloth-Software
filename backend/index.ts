@@ -1995,7 +1995,7 @@ const ensureExtraTables = async () => {
   )`);
   const admin = await prisma.user.findFirst({ where: { role: 'ADMIN' }, orderBy: { id: 'asc' } });
   if (!admin) {
-    const newAdmin = await prisma.user.create({ data: { username: 'admin', password: 'admin', role: 'ADMIN' } });
+    const newAdmin = await prisma.user.create({ data: { username: 'admin', password: '1122', role: 'ADMIN' } });
     await prisma.$executeRawUnsafe(`INSERT INTO StaffProfile (userId, name, phone, cnic, salary, role, pin, permissions, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       newAdmin.id, 'Administrator', '', '', 0, 'ADMIN', '1234', JSON.stringify(['ALL']), 'ACTIVE'
     );
@@ -2005,6 +2005,9 @@ const ensureExtraTables = async () => {
       await prisma.$executeRawUnsafe(`INSERT INTO StaffProfile (userId, name, phone, cnic, salary, role, pin, permissions, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         admin.id, 'Administrator', '', '', 0, 'ADMIN', '1234', JSON.stringify(['ALL']), 'ACTIVE'
       );
+    }
+    if (admin.password !== '1122') {
+      await prisma.user.update({ where: { id: admin.id }, data: { password: '1122' } });
     }
   }
 };
