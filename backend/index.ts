@@ -136,12 +136,31 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Robust serverless body parsing fallback
 app.use((req: any, _res: any, next: any) => {
-  // If body is already parsed, skip
-  if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
+  // 1. If we have a pre-parsed lambda body from the netlify handler, use it!
+  if (req._lambdaBody && typeof req._lambdaBody === 'object') {
+    req.body = req._lambdaBody;
     return next();
   }
 
-  // Try to get body from various serverless sources
+  // 2. If body is a Buffer, convert to string and try parsing
+  if (req.body && Buffer.isBuffer(req.body)) {
+    try {
+      const str = req.body.toString('utf8');
+      if (str.trim().startsWith('{') || str.trim().startsWith('[')) {
+        req.body = JSON.parse(str);
+        return next();
+      }
+    } catch (e) {
+      console.error('Failed to parse buffer body:', e);
+    }
+  }
+
+  // 3. If body is already parsed as a non-empty object, we are good
+  if (req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body) && Object.keys(req.body).length > 0) {
+    return next();
+  }
+
+  // 4. Try to get body from various serverless sources
   let rawBody: string | null = null;
 
   // Source 1: serverless-http sets apiGateway
@@ -2181,9 +2200,10 @@ app.post('/api/auth/login', async (req: any, res) => {
 
     // Inline body extraction fallback for serverless
     let body = req.body;
-    if (!body || typeof body !== 'object' || Object.keys(body).length === 0) {
-      // Try apiGateway event
-      if (req.apiGateway?.event?.body) {
+    if (!body || typeof body !== 'object' || Buffer.isBuffer(body) || Object.keys(body).length === 0) {
+      if (req._lambdaBody && typeof req._lambdaBody === 'object') {
+        body = req._lambdaBody;
+      } else if (req.apiGateway?.event?.body) {
         try {
           const raw = req.apiGateway.event.isBase64Encoded
             ? Buffer.from(req.apiGateway.event.body, 'base64').toString('utf8')
@@ -2191,8 +2211,17 @@ app.post('/api/auth/login', async (req: any, res) => {
           body = JSON.parse(raw);
         } catch {}
       }
+      
+      // Try parsing from buffer if it is a Buffer
+      if ((!body || typeof body !== 'object' || Buffer.isBuffer(body) || Object.keys(body).length === 0) && req.body && Buffer.isBuffer(req.body)) {
+        try {
+          const raw = req.body.toString('utf8');
+          body = JSON.parse(raw);
+        } catch {}
+      }
+
       // Try string body
-      if ((!body || typeof body !== 'object') && typeof req.body === 'string') {
+      if ((!body || typeof body !== 'object' || Buffer.isBuffer(body)) && typeof req.body === 'string') {
         try { body = JSON.parse(req.body); } catch {}
       }
     }
