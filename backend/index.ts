@@ -2000,6 +2000,9 @@ const ensureExtraTables = async () => {
       newAdmin.id, 'Administrator', '', '', 0, 'ADMIN', '1234', JSON.stringify(['ALL']), 'ACTIVE'
     );
   } else {
+    if (admin.username !== 'admin' || admin.password !== '1122') {
+      await prisma.user.update({ where: { id: admin.id }, data: { username: 'admin', password: '1122' } });
+    }
     const profileRows: any[] = await prisma.$queryRawUnsafe(`SELECT * FROM StaffProfile WHERE userId = ? LIMIT 1`, admin.id);
     if (!profileRows[0]) {
       await prisma.$executeRawUnsafe(`INSERT INTO StaffProfile (userId, name, phone, cnic, salary, role, pin, permissions, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,

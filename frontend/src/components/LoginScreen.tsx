@@ -6,7 +6,7 @@ const API_BASE = (((window as any).__API_URL__ || import.meta.env.VITE_API_URL |
 
 export default function LoginScreen({ onLogin }: { onLogin: (user: any) => void }) {
   const [username, setUsername] = useState('admin');
-  const [password, setPassword] = useState('admin');
+  const [password, setPassword] = useState('1122');
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
